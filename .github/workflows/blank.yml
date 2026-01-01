@@ -74,6 +74,15 @@ jobs:
         sudo apt-get clean
         df -Th
 
+    - name: Fix Lean Python prereqs
+      run: |
+        sudo mkdir -p /usr/lib/python3/distutils
+        sudo mkdir -p /usr/lib/python3.10/distutils
+        sudo mkdir -p /usr/lib/python3.10/lib2to3
+        sudo ln -sf /usr/lib/python3/distutils-extra/* /usr/lib/python3/distutils/ 2>/dev/null || true
+        sudo ln -sf /usr/lib/python3/distutils-extra/* /usr/lib/python3.10/distutils/ 2>/dev/null || true
+        sudo ln -sf /usr/lib/python3.10/lib2to3 /usr/lib/python3/lib2to3 2>/dev/null || true
+
     - name: Select source code
       id: src
       run: |
