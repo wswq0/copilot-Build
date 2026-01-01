@@ -72,11 +72,15 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: 生成默认配置
-        run: |
-          cd openwrt
-          make defconfig
+#- #- name: Apply config env: CONFIG_FILE: '${{ github.event.inputs.target }}.config' run: | [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrt/.config cd openwrt && make defcon
 
+      - name: Apply config 
+        env: 
+         CONFIG_FILE: '${{ github.event.inputs.target }}.config' 
+        run: | 
+          [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrt/.config 
+          cd openwrt && make defconfig
+      
       - name: 开启 SSH（可选）
         if: ${{ github.event.inputs.ssh == 'true' }}
         uses: mxschmitt/action-tmate@v3
