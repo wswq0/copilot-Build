@@ -1,4 +1,4 @@
-name: OpenWrt-Build-tese
+name: test
 
 on:
   workflow_dispatch:
@@ -24,14 +24,10 @@ jobs:
     outputs:
       runner: ${{ steps.pick.outputs.runner }}
     steps:
-    - name: Try Ubuntu 20.04
+    - name: Pick runner
       id: pick
       run: |
         echo "runner=ubuntu-20.04" >> $GITHUB_OUTPUT
-        echo "Trying ubuntu-20.04 for 60 seconds..."
-        sleep 60
-        echo "ubuntu-20.04 fallback to ubuntu-22.04"
-        echo "runner=ubuntu-22.04" > $GITHUB_OUTPUT
 
   build:
     needs: detect-runner
@@ -77,11 +73,8 @@ jobs:
         echo "Fixing Lean Python prereqs for Ubuntu 22.04"
         sudo apt-get install -y python3-distutils-extra python3-lib2to3
         python3 -m pip install setuptools==58.0.0
-        DISTUTILS_PATH=$(python3 - << 'EOF'
-import distutils, os
-print(os.path.dirname(distutils.__file__))
-EOF
-)
+        DISTUTILS_PATH=$(python3 -c "import distutils, os; print(os.path.dirname(distutils.__file__))")
+        echo "Found distutils at: $DISTUTILS_PATH"
         sudo mkdir -p /usr/lib/python3/distutils
         sudo mkdir -p /usr/lib/python3.10/distutils
         sudo cp -r $DISTUTILS_PATH/* /usr/lib/python3/distutils/
