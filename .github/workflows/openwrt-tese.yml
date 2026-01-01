@@ -1,169 +1,136 @@
-name: test
+name: OpenWrt-Auto-Build-tese
 
 on:
   workflow_dispatch:
     inputs:
       source:
-        description: "选择源码: lean / immortalwrt / official"
-        default: "lean"
-      target:
-        description: "机型名称（如 x86_64）"
-        default: "x86_64"
+        description: "选择源码"
+        required: true
+        default: "Lean"
+        type: choice
+        options:
+          - Lean
+          - ImmortalWrt
+          - Official
+      debug:
+        description: "启用 SSH 调试"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
-env:
-  UPLOAD_FIRMWARE: true
-  UPLOAD_RELEASE: true
+  schedule:
+    - cron: "0 2 1 * *" # 每月1号 自动编译(UTC)
 
-  LEAN_REPO: https://github.com/coolsnowwolf/lede
-  IMMORTALWRT_REPO: https://github.com/immortalwrt/immortalwrt
-  OFFICIAL_REPO: https://github.com/openwrt/openwrt
+permissions:
+  contents: write
+  actions: write
 
 jobs:
-  detect-runner:
-    runs-on: ubuntu-latest
-    outputs:
-      runner: ${{ steps.pick.outputs.runner }}
-    steps:
-    - name: Pick runner
-      id: pick
-      run: |
-        echo "runner=ubuntu-20.04" >> $GITHUB_OUTPUT
-
   build:
-    needs: detect-runner
-    runs-on: ${{ needs.detect-runner.outputs.runner }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 720
 
     steps:
-    - name: Checkout workflow repo
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-        clean: true
+      - name: Checkout Repo
+        uses: actions/checkout@v4
 
-    - name: Expand disk space
-      uses: easimon/maximize-build-space@v10
-      with:
-        root-reserve-mb: 2048
-        swap-size-mb: 8192
-        remove-dotnet: true
-        remove-android: true
-        remove-haskell: true
-        remove-docker-images: true
+      - name: 扩容磁盘到 50GB
+        run: |
+          sudo swapoff -a || true
+          sudo rm -f /swapfile || true
+          sudo fallocate -l 50G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          df -h
+          free -h
 
-    - name: Install build dependencies
-      env:
-        DEBIAN_FRONTEND: noninteractive
-      run: |
-        sudo apt-get update -qq
-        sudo apt-get install -yqq --no-install-recommends \
-          ack antlr3 asciidoc autoconf automake autopoint binutils bison \
-          build-essential bzip2 ccache clang cmake cpio curl device-tree-compiler \
-          flex gawk gcc-multilib g++-multilib gettext genisoimage git gperf \
-          haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev \
-          libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev \
-          libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev \
-          libssl-dev libtool ninja-build p7zip-full patch pkgconf python3 \
-          python3-pip python3-setuptools python3-wheel qemu-utils rsync scons \
-          squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget \
-          xmlto xxd zlib1g-dev
+      - name: 安装编译依赖
+        run: |
+          sudo apt update
+          sudo apt install -y \
+            build-essential asciidoc binutils bzip2 gawk gettext git libncurses5-dev libz-dev \
+            patch unzip zlib1g-dev lib32gcc-s1 libc6-dev-i386 subversion flex uglifyjs \
+            gcc-multilib g++-multilib p7zip p7zip-full msmtp libssl-dev texinfo libglib2.0-dev \
+            xmlto qemu-utils upx libelf-dev autoconf automake libtool autopoint ccache curl wget \
+            python3 python2.7 git-core rsync swig coreutils jq
 
-    - name: Fix Lean Python prereqs (only for ubuntu-22.04)
-      if: ${{ needs.detect-runner.outputs.runner == 'ubuntu-22.04' }}
-      run: |
-        echo "Fixing Lean Python prereqs for Ubuntu 22.04"
-        sudo apt-get install -y python3-distutils-extra python3-lib2to3
-        python3 -m pip install setuptools==58.0.0
-        DISTUTILS_PATH=$(python3 -c "import distutils, os; print(os.path.dirname(distutils.__file__))")
-        echo "Found distutils at: $DISTUTILS_PATH"
-        sudo mkdir -p /usr/lib/python3/distutils
-        sudo mkdir -p /usr/lib/python3.10/distutils
-        sudo cp -r $DISTUTILS_PATH/* /usr/lib/python3/distutils/
-        sudo cp -r $DISTUTILS_PATH/* /usr/lib/python3.10/distutils/
-        sudo cp -r /usr/lib/python3.10/lib2to3 /usr/lib/python3/lib2to3 || true
+      - name: 下载源码
+        run: |
+          case "${{ github.event.inputs.source }}" in
+            Lean)
+              REPO="https://github.com/coolsnowwolf/lede"
+              ;;
+            ImmortalWrt)
+              REPO="https://github.com/immortalwrt/immortalwrt"
+              ;;
+            Official)
+              REPO="https://github.com/openwrt/openwrt"
+              ;;
+          esac
 
-    - name: Select source code
-      id: src
-      run: |
-        if [ "${{ github.event.inputs.source }}" = "lean" ]; then
-            echo "REPO=${{ env.LEAN_REPO }}" >> $GITHUB_OUTPUT
-        elif [ "${{ github.event.inputs.source }}" = "immortalwrt" ]; then
-            echo "REPO=${{ env.IMMORTALWRT_REPO }}" >> $GITHUB_OUTPUT
-        else
-            echo "REPO=${{ env.OFFICIAL_REPO }}" >> $GITHUB_OUTPUT
-        fi
+          echo "Using Source: $REPO"
+          git clone --depth 1 $REPO openwrt
+          cd openwrt
+          if [ "${{ github.event.inputs.source }}" = "lean" ]; then
+          echo "src-git helloworld https://github.com/fw876/helloworld.git" >> feeds.conf.default
+          fi
+		
+      # ⬇️ SSH 提前到 feeds 之前
+      - name: 可选 SSH 连接（调试用）
+        if: ${{ github.event.inputs.debug == 'true' }}
+        uses: mxschmitt/action-tmate@v3
 
-    - name: Clone OpenWrt source
-      run: |
-        git clone --depth 1 ${{ steps.src.outputs.REPO }} openwrt
-        cd openwrt
-        if [ "${{ github.event.inputs.source }}" = "lean" ]; then
-            echo "src-git helloworld https://github.com/fw876/helloworld.git" >> feeds.conf.default
-        fi
 
-    - name: Bind mount build directories
-      run: |
-        sudo mkdir -p /mnt/openwrt/{dl,bin,build_dir,staging_dir}
-        sudo rm -rf openwrt/dl openwrt/bin openwrt/build_dir openwrt/staging_dir
-        sudo mkdir -p openwrt/dl openwrt/bin openwrt/build_dir openwrt/staging_dir
-        sudo mount --bind /mnt/openwrt/dl openwrt/dl
-        sudo mount --bind /mnt/openwrt/bin openwrt/bin
-        sudo mount --bind /mnt/openwrt/build_dir openwrt/build_dir
-        sudo mount --bind /mnt/openwrt/staging_dir openwrt/staging_dir
 
-    - name: Update feeds
-      run: |
-        cd openwrt
-        ./scripts/feeds update -a
 
-    - name: Install feeds
-      run: |
-        cd openwrt
-        ./scripts/feeds install -a
 
-    - name: Apply config
-      env:
-        CONFIG_FILE: '${{ github.event.inputs.target }}.config'
-      run: |
-        [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrt/.config
-        cd openwrt && make defconfig
+      - name: 更新 feeds
+        working-directory: ./openwrt
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
 
-    - name: Download packages
-      run: |
-        cd openwrt
-        make download -j"$(nproc)"
-        find dl -size -1024c -delete
+      - name: Configuration Customization - Build_x86_64
+        env:
+          CONFIG_FILE: '.config'
+       run: |
+         [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrt/.config
+         
+         cd openwrt && make defconfig
 
-    - name: Compile firmware
-      run: |
-        cd openwrt
-        make -j"$(nproc)" || make -j1 V=s
 
-    - name: Organize firmware
-      run: |
-        mkdir firmware
-        mv openwrt/bin/targets/*/*/*sysupgrade* firmware/ 2>/dev/null || true
-        mv openwrt/bin/targets/*/*/*combined* firmware/ 2>/dev/null || true
-        cp openwrt/.config firmware/${{ github.event.inputs.target }}.config
-        ls -lh firmware
+      - name: 开始编译
+        working-directory: ./openwrt
+        run: |
+          make defconfig
+          make -j$(nproc) || make -j1 V=s
 
-    - name: Upload firmware artifact
-      if: env.UPLOAD_FIRMWARE == 'true'
-      uses: actions/upload-artifact@v4
-      with:
-        name: firmware_${{ github.event.inputs.source }}_${{ github.event.inputs.target }}
-        path: firmware
+      - name: 整理固件
+        run: |
+          mkdir -p output
+          find openwrt/bin/targets/ -type f -maxdepth 4 -print0 | xargs -0 mv -t output || true
+          ls -lh output
 
-    - name: Upload to GitHub Release
-      if: env.UPLOAD_RELEASE == 'true'
-      uses: softprops/action-gh-release@v2
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        files: firmware/*
-        name: Build-${{ github.event.inputs.source }}-${{ github.event.inputs.target }}
-        tag_name: build-${{ github.run_id }}
-        body: |
-          🎉 OpenWrt 固件编译完成！
-          🔧 源码：${{ github.event.inputs.source }}
-          🖥️ 机型：${{ github.event.inputs.target }}
-          📦 自动发布：GitHub Actions
+      - name: 上传 Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenWrt-${{ github.event.inputs.source }}
+          path: output
+
+      - name: 创建 Release & 上传固件
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: OpenWrt-${{ github.event.inputs.source }}-${{ github.run_number }}
+          name: "OpenWrt 固件 - ${{ github.event.inputs.source }}"
+          files: output/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 清理缓存 加速下次运行
+        run: |
+          sudo rm -rf /usr/share/dotnet /etc/mysql /etc/php /var/lib/mysql /var/lib/apt/lists/*
+          echo "Cache cleared"
