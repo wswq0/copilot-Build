@@ -114,18 +114,12 @@ jobs:
         cd openwrt
         ./scripts/feeds install -a
 
-    - name: Apply config (with directory protection)
+    - name: Defconfig ${{matrix.target}}
+      env:
+        CONFIG_FILE: '${{matrix.target}}.config'
       run: |
-        cd $GITHUB_WORKSPACE
-        if [ ! -f "${{ github.event.inputs.target }}.config" ]; then
-            echo "❌ ERROR: 找不到配置文件：${{ github.event.inputs.target }}.config"
-            exit 1
-        fi
-
-        cp -f ${{ github.event.inputs.target }}.config openwrt/.config
-        cd openwrt
-        make defconfig
-
+        [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrt/.config
+        cd openwrt && make defconfig
     - name: Enable ccache
       run: |
         mkdir -p /mnt/ccache
