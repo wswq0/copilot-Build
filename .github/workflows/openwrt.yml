@@ -1,4 +1,4 @@
-name: Build-OpenWrt3no1
+name: OpenWrt-Auto-Build
 
 on:
   workflow_dispatch:
@@ -6,120 +6,129 @@ on:
       source:
         description: "选择源码"
         required: true
-        default: "lean"
+        default: "Lean"
         type: choice
         options:
-          - lean
-          - immortalwrt
-          - official
-      ssh:
-        description: "是否开启 SSH"
-        required: true
+          - Lean
+          - ImmortalWrt
+          - Official
+      debug:
+        description: "启用 SSH 调试"
+        required: false
         default: "false"
         type: choice
         options:
-          - "true"
           - "false"
+          - "true"
 
   schedule:
-    - cron: "0 0 1 * *"   # 每月 1 号自动编译
+    - cron: "0 2 1 * *" # 每月1号 自动编译(UTC)
 
 permissions:
   contents: write
-
-env:
-  TZ: Asia/Shanghai
+  actions: write
 
 jobs:
   build:
     runs-on: ubuntu-22.04
+    timeout-minutes: 720
 
     steps:
-      - name: Checkout
+      - name: Checkout Repo
         uses: actions/checkout@v4
 
-      - name: 扩容磁盘到 50G+
+      - name: 扩容磁盘到 50GB
         run: |
-          sudo rm -rf /usr/share/dotnet /etc/mysql /var/lib/mysql /usr/local/lib/android
-          df -hT
+          sudo swapoff -a || true
+          sudo rm -f /swapfile || true
+          sudo fallocate -l 50G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          df -h
+          free -h
 
       - name: 安装编译依赖
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential asciidoc binutils bzip2 gawk gettext git libncurses5-dev \
-            libz-dev patch unzip zlib1g-dev lib32gcc-s1 libc6-dev-i386 subversion \
-            flex uglifyjs gcc-multilib g++-multilib p7zip p7zip-full msmtp curl wget \
-            libssl-dev ruby python3 python3-pip rsync ca-certificates
+          sudo apt update
+          sudo apt install -y \
+            build-essential asciidoc binutils bzip2 gawk gettext git libncurses5-dev libz-dev \
+            patch unzip zlib1g-dev lib32gcc-s1 libc6-dev-i386 subversion flex uglifyjs \
+            gcc-multilib g++-multilib p7zip p7zip-full msmtp libssl-dev texinfo libglib2.0-dev \
+            xmlto qemu-utils upx libelf-dev autoconf automake libtool autopoint ccache curl wget \
+            python3 python2.7 git-core rsync swig coreutils jq
 
       - name: 下载源码
         run: |
           case "${{ github.event.inputs.source }}" in
-            lean)
-              git clone https://github.com/coolsnowwolf/lede openwrt
+            Lean)
+              REPO="https://github.com/coolsnowwolf/lede"
               ;;
-            immortalwrt)
-              git clone https://github.com/immortalwrt/immortalwrt openwrt
+            ImmortalWrt)
+              REPO="https://github.com/immortalwrt/immortalwrt"
               ;;
-            official)
-              git clone https://github.com/openwrt/openwrt openwrt
+            Official)
+              REPO="https://github.com/openwrt/openwrt"
               ;;
           esac
 
+          echo "Using Source: $REPO"
 
-      - name: Clone OpenWrt source
-        run: |
-          git clone --depth 1 ${{ steps.src.outputs.REPO }} openwrt
-          cd openwrt
-          if [ "${{ github.event.inputs.source }}" = "lean" ]; then
-          echo "src-git helloworld https://github.com/fw876/helloworld.git" >> feeds.conf.default
+          # 清理已存在 openwrt 目录，避免 clone 失败
+          [ -d openwrt ] && sudo rm -rf openwrt
+
+          git clone --depth 1 "$REPO" openwrt
+
+          # 仅 Lean 增加 fw876/helloworld
+          if [ "${{ github.event.inputs.source }}" = "Lean" ]; then
+            echo "src-git helloworld https://github.com/fw876/helloworld.git" >> openwrt/feeds.conf.default
           fi
 
-
-
+      # SSH 在 feeds 之前
+      - name: 可选 SSH 连接（调试用）
+        if: ${{ github.event.inputs.debug == 'true' }}
+        uses: mxschmitt/action-tmate@v3
 
       - name: 更新 feeds
+        working-directory: ./openwrt
         run: |
-          cd openwrt
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-#- #- name: Apply config env: CONFIG_FILE: '${{ github.event.inputs.target }}.config' run: | [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrt/.config cd openwrt && make defcon
-
-      - name: Apply config 
-        env: 
-         CONFIG_FILE: '${{ github.event.inputs.target }}.config' 
-        run: | 
-          [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrt/.config 
+      - name: 自定义配置（可选）
+        env:
+          CONFIG_FILE: '.config'
+        run: |
+          [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrt/.config
           cd openwrt && make defconfig
-      
-      - name: 开启 SSH（可选）
-        if: ${{ github.event.inputs.ssh == 'true' }}
-        uses: mxschmitt/action-tmate@v3
 
       - name: 开始编译
+        working-directory: ./openwrt
         run: |
-          cd openwrt
           make -j$(nproc) || make -j1 V=s
 
       - name: 整理固件
         run: |
-          mkdir -p firmware
-          find openwrt/bin/targets/ -type f -exec cp {} firmware/ \;
-          ls -lh firmware
+          mkdir -p output
+          find openwrt/bin/targets/ -type f -maxdepth 4 -print0 | xargs -0 mv -t output || true
+          ls -lh output
 
       - name: 上传 Artifact
         uses: actions/upload-artifact@v4
         with:
           name: OpenWrt-${{ github.event.inputs.source }}
-          path: firmware
+          path: output
 
-      - name: 上传到 GitHub Releases
+      - name: 创建 Release & 上传固件
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: openwrt-${{ github.run_id }}
-          name: OpenWrt 自动编译
-          body: |
-            来源: ${{ github.event.inputs.source }}
-            自动构建成功
-          files: firmware/*
+          tag_name: OpenWrt-${{ github.event.inputs.source }}-${{ github.run_number }}
+          name: "OpenWrt 固件 - ${{ github.event.inputs.source }}"
+          files: output/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 清理缓存 加速下次运行
+        run: |
+          sudo rm -rf /usr/share/dotnet /etc/mysql /etc/php /var/lib/mysql /var/lib/apt/lists/*
+          echo "Cache cleared"
