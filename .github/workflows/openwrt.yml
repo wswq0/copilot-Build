@@ -1,0 +1,109 @@
+name: Build-OpenWrt3no1
+
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: "选择源码"
+        required: true
+        default: "lean"
+        type: choice
+        options:
+          - lean
+          - immortalwrt
+          - official
+      ssh:
+        description: "是否开启 SSH"
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+  schedule:
+    - cron: "0 0 1 * *"   # 每月 1 号自动编译
+
+permissions:
+  contents: write
+
+env:
+  TZ: Asia/Shanghai
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 扩容磁盘到 50G+
+        run: |
+          sudo rm -rf /usr/share/dotnet /etc/mysql /var/lib/mysql /usr/local/lib/android
+          df -hT
+
+      - name: 安装编译依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential asciidoc binutils bzip2 gawk gettext git libncurses5-dev \
+            libz-dev patch unzip zlib1g-dev lib32gcc-s1 libc6-dev-i386 subversion \
+            flex uglifyjs gcc-multilib g++-multilib p7zip p7zip-full msmtp curl wget \
+            libssl-dev ruby python3 python3-pip rsync ca-certificates
+
+      - name: 下载源码
+        run: |
+          case "${{ github.event.inputs.source }}" in
+            lean)
+              git clone https://github.com/coolsnowwolf/lede openwrt
+              ;;
+            immortalwrt)
+              git clone https://github.com/immortalwrt/immortalwrt openwrt
+              ;;
+            official)
+              git clone https://github.com/openwrt/openwrt openwrt
+              ;;
+          esac
+
+      - name: 更新 feeds
+        run: |
+          cd openwrt
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: 生成默认配置
+        run: |
+          cd openwrt
+          make defconfig
+
+      - name: 开启 SSH（可选）
+        if: ${{ github.event.inputs.ssh == 'true' }}
+        uses: mxschmitt/action-tmate@v3
+
+      - name: 开始编译
+        run: |
+          cd openwrt
+          make -j$(nproc) || make -j1 V=s
+
+      - name: 整理固件
+        run: |
+          mkdir -p firmware
+          find openwrt/bin/targets/ -type f -exec cp {} firmware/ \;
+          ls -lh firmware
+
+      - name: 上传 Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenWrt-${{ github.event.inputs.source }}
+          path: firmware
+
+      - name: 上传到 GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: openwrt-${{ github.run_id }}
+          name: OpenWrt 自动编译
+          body: |
+            来源: ${{ github.event.inputs.source }}
+            自动构建成功
+          files: firmware/*
