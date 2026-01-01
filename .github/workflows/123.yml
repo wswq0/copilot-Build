@@ -62,11 +62,13 @@ jobs:
         ./scripts/feeds update -a
         ./scripts/feeds install -a
 
-    - name: 复制仓库 .config（支持外部配置）
+
+    - name: Apply config
+      env:
+        CONFIG_FILE: '${{ github.event.inputs.target }}.config'
       run: |
-        if [ -f .config ]; then
-          cp .config openwrt/.config
-        fi
+        [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrt/.config
+
 
     - name: 执行自定义脚本（可选 scripts/*.sh）
       run: |
