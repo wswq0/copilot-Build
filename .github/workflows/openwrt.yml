@@ -66,6 +66,18 @@ jobs:
               ;;
           esac
 
+
+      - name: Clone OpenWrt source
+        run: |
+          git clone --depth 1 ${{ steps.src.outputs.REPO }} openwrt
+          cd openwrt
+          if [ "${{ github.event.inputs.source }}" = "lean" ]; then
+          echo "src-git helloworld https://github.com/fw876/helloworld.git" >> feeds.conf.default
+          fi
+
+
+
+
       - name: 更新 feeds
         run: |
           cd openwrt
