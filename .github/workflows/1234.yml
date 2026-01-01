@@ -1,0 +1,151 @@
+name: OpenWrt-Auto-Build1234
+
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: "选择源码"
+        required: true
+        default: "Lean"
+        type: choice
+        options:
+          - Lean
+          - ImmortalWrt
+          - Official
+      debug:
+        description: "启用 SSH 调试"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+  schedule:
+    - cron: "0 2 1 * *"
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 720
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+
+      ########################################################
+      # ******** 真 正 解 决 磁 盘 空 问 题 的 核 心 ********
+      ########################################################
+      - name: 释放磁盘空间（释放 30~50GB）
+        run: |
+          echo "Before clean:"
+          df -h
+
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/hostedtoolcache
+          sudo docker image prune -af
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
+
+          echo "After clean:"
+          df -h
+
+
+      ########################################################
+      # ************ OpenWrt 编译改到 /mnt 100GB *************
+      ########################################################
+      - name: 准备 100GB 工作目录
+        run: |
+          sudo mkdir -p /mnt/openwrt
+          sudo chown $USER:$USER /mnt/openwrt
+          ln -sf /mnt/openwrt ./openwrtdir
+          echo "Workdir Ready"
+          df -h
+
+
+      - name: 安装编译依赖
+        run: |
+          sudo apt update
+          sudo apt install -y \
+            build-essential asciidoc binutils bzip2 gawk gettext git libncurses5-dev libz-dev \
+            patch unzip zlib1g-dev lib32gcc-s1 libc6-dev-i386 subversion flex uglifyjs \
+            gcc-multilib g++-multilib p7zip p7zip-full msmtp libssl-dev texinfo libglib2.0-dev \
+            xmlto qemu-utils upx libelf-dev autoconf automake libtool autopoint ccache curl wget \
+            python3 python2.7 git-core rsync swig coreutils jq
+
+      - name: 下载源码
+        working-directory: ./openwrtdir
+        run: |
+          case "${{ github.event.inputs.source }}" in
+            Lean)
+              REPO="https://github.com/coolsnowwolf/lede"
+              ;;
+            ImmortalWrt)
+              REPO="https://github.com/immortalwrt/immortalwrt"
+              ;;
+            Official)
+              REPO="https://github.com/openwrt/openwrt"
+              ;;
+          esac
+
+          echo "Using Source: $REPO"
+
+          [ -d openwrt ] && sudo rm -rf openwrt
+          git clone --depth 1 "$REPO" openwrt
+
+          if [ "${{ github.event.inputs.source }}" = "Lean" ]; then
+            echo "src-git helloworld https://github.com/fw876/helloworld.git" >> openwrt/feeds.conf.default
+          fi
+
+
+      # SSH 在 feeds 前
+      - name: 可选 SSH 调试
+        if: ${{ github.event.inputs.debug == 'true' }}
+        uses: mxschmitt/action-tmate@v3
+
+
+      - name: 更新 feeds
+        working-directory: ./openwrtdir/openwrt
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: 自定义配置
+        env:
+          CONFIG_FILE: '.config'
+        run: |
+          [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrtdir/openwrt/.config
+          cd openwrtdir/openwrt && make defconfig
+
+      - name: 开始编译
+        working-directory: ./openwrtdir/openwrt
+        run: |
+          make -j$(nproc) || make -j1 V=s
+
+      - name: 整理固件
+        run: |
+          mkdir -p output
+          find openwrtdir/openwrt/bin/targets/ -type f -maxdepth 4 -print0 | xargs -0 mv -t output || true
+          ls -lh output
+
+      - name: 上传 Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenWrt-${{ github.event.inputs.source }}
+          path: output
+
+      - name: 创建 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: OpenWrt-${{ github.event.inputs.source }}-${{ github.run_number }}
+          name: "OpenWrt 固件 - ${{ github.event.inputs.source }}"
+          files: output/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
