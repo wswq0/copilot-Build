@@ -1,4 +1,4 @@
-name: OpenWrt-Auto-Build-tese
+name: OpenWrt-Auto-Build-test
 
 on:
   workflow_dispatch:
@@ -74,19 +74,16 @@ jobs:
 
           echo "Using Source: $REPO"
           git clone --depth 1 $REPO openwrt
-          cd openwrt
-          if [ "${{ github.event.inputs.source }}" = "lean" ]; then
-          echo "src-git helloworld https://github.com/fw876/helloworld.git" >> feeds.conf.default
+
+          # 仅 Lean 加 helloworld
+          if [ "${{ github.event.inputs.source }}" = "Lean" ]; then
+            echo "src-git helloworld https://github.com/fw876/helloworld.git" >> openwrt/feeds.conf.default
           fi
 
-      # ⬇️ SSH 提前到 feeds 之前
+      # SSH 在 feeds 之前（正确）
       - name: 可选 SSH 连接（调试用）
         if: ${{ github.event.inputs.debug == 'true' }}
         uses: mxschmitt/action-tmate@v3
-
-
-
-
 
       - name: 更新 feeds
         working-directory: ./openwrt
@@ -99,14 +96,11 @@ jobs:
           CONFIG_FILE: '.config'
         run: |
           [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrt/.config
-         
           cd openwrt && make defconfig
-
 
       - name: 开始编译
         working-directory: ./openwrt
         run: |
-          make defconfig
           make -j$(nproc) || make -j1 V=s
 
       - name: 整理固件
