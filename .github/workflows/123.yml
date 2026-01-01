@@ -1,0 +1,114 @@
+name: 123OpenWrt Auto Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      SOURCE:
+        description: "选择源码"
+        required: true
+        default: "lean"
+        type: choice
+        options:
+          - lean
+          - immortalwrt
+          - official
+      SSH:
+        description: "是否启用 SSH 调试（yes / no）"
+        required: false
+        default: "no"
+  schedule:
+    - cron: "0 0 1 * *"   # 每月1号 UTC 0点
+
+env:
+  TZ: Asia/Shanghai
+  REPO_URL_LEAN: https://github.com/coolsnowwolf/lede
+  REPO_URL_IMMORTAL: https://github.com/immortalwrt/immortalwrt
+  REPO_URL_OFFICIAL: https://github.com/openwrt/openwrt
+  REPO_BRANCH: master
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: 释放磁盘空间（解决空间不足）
+      run: |
+        sudo rm -rf /usr/share/dotnet
+        sudo rm -rf /opt/ghc
+        sudo rm -rf /usr/local/lib/android
+        sudo apt clean
+        df -h
+
+    - name: 安装编译依赖
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential asciidoc binutils bzip2 gawk gettext git libncurses5-dev \
+          libz-dev patch python3 python3-distutils unzip zlib1g-dev lib32gcc-s1 libc6-dev-i386 \
+          subversion flex uglifyjs gcc-multilib g++-multilib p7zip p7zip-full msmtp curl wget \
+          rsync qemu-utils ccache
+
+    - name: 克隆源码
+      run: |
+        case "${{ github.event.inputs.SOURCE }}" in
+          lean) URL=${REPO_URL_LEAN} ;;
+          immortalwrt) URL=${REPO_URL_IMMORTAL} ;;
+          official) URL=${REPO_URL_OFFICIAL} ;;
+        esac
+        git clone --depth 1 $URL -b $REPO_BRANCH openwrt
+        cd openwrt
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
+
+    - name: 复制仓库 .config（支持外部配置）
+      run: |
+        if [ -f .config ]; then
+          cp .config openwrt/.config
+        fi
+
+    - name: 执行自定义脚本（可选 scripts/*.sh）
+      run: |
+        chmod +x scripts/*.sh 2>/dev/null || true
+        for i in scripts/*.sh; do [ -e "$i" ] && $i; done || true
+
+    - name: 自定义脚本后重新 feeds update & install
+      run: |
+        cd openwrt
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
+
+    - name: SSH Debug
+      if: github.event.inputs.SSH == 'yes'
+      uses: mxschmitt/action-tmate@v3
+
+    - name: 开始编译
+      run: |
+        cd openwrt
+        make defconfig
+        make -j$(nproc) || make -j1 V=s
+
+    - name: 整理固件
+      run: |
+        mkdir -p release
+        cp -rf openwrt/bin/targets/*/* release/
+
+    - name: 上传 Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: OpenWrt-Firmware
+        path: release
+
+    - name: 发布到 GitHub Releases
+      uses: ncipollo/release-action@v1
+      with:
+        tag: OpenWrt-${{ github.run_number }}
+        name: OpenWrt 自动编译 ${{ github.run_number }}
+        body: |
+          🎯 OpenWrt 自动构建
+          - 源码：${{ github.event.inputs.SOURCE }}
+          - 构建编号：${{ github.run_number }}
+          - 时间：${{ github.run_started_at }}
+        artifacts: "release/**"
+        token: ${{ secrets.GITHUB_TOKEN }}
